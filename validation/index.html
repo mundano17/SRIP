@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>color validator</title>
+</head>
+<body>
+
+<h2>captured color</h2>
+
+<div id="swatch"
+     style="width:100px;height:100px;border:1px solid #000;background:#eee;">
+</div>
+
+<p id="hex">-</p>
+<p id="rgb">-</p>
+<p id="time">-</p>
+
+<h2>reference color</h2>
+
+<input type="color" id="picker" value="#808080" oninput="update()">
+<p id="pickerHex">#808080</p>
+
+<h2>delta</h2>
+
+<p>R: <span id="dR">-</span></p>
+<p>G: <span id="dG">-</span></p>
+<p>B: <span id="dB">-</span></p>
+
+<p>match: <strong id="match">-</strong></p>
+
+<h2>history</h2>
+
+<div id="history"></div>
+
+<script>
+    let captured = null;
+    let lastVersion = -1;
+
+    function hexToRgb(h) {
+        h = h.replace("#", "");
+        return {
+            r: parseInt(h.slice(0, 2), 16),
+            g: parseInt(h.slice(2, 4), 16),
+            b: parseInt(h.slice(4, 6), 16)
+        };
+    }
+
+    function update() {
+        const hex = document.getElementById("picker").value.toUpperCase();
+
+        document.getElementById("pickerHex").textContent = hex;
+
+        if (!captured) return;
+
+        const p = hexToRgb(hex);
+
+        const dR = Math.abs(p.r - captured.r);
+        const dG = Math.abs(p.g - captured.g);
+        const dB = Math.abs(p.b - captured.b);
+
+        document.getElementById("dR").textContent = dR;
+        document.getElementById("dG").textContent = dG;
+        document.getElementById("dB").textContent = dB;
+
+        const pct = Math.max(
+            0,
+            Math.round(
+                100 -
+                (Math.sqrt(dR * dR + dG * dG + dB * dB) / 441.67) * 100
+            )
+        );
+
+        document.getElementById("match").textContent = pct + "%";
+    }
+
+    function poll() {
+        fetch("/color")
+            .then(res => {
+                if (res.status === 204) return null;
+                return res.json();
+            })
+            .then(d => {
+                if (!d) return;
+                if (d.version === lastVersion) return;
+
+                lastVersion = d.version;
+                captured = d;
+
+                document.getElementById("swatch").style.background = d.hex;
+                document.getElementById("hex").textContent = d.hex;
+                document.getElementById("rgb").textContent =
+                    `rgb(${d.r}, ${d.g}, ${d.b})`;
+                document.getElementById("time").textContent =
+                    new Date(d.timestamp).toLocaleTimeString();
+
+                update();
+                loadHistory();
+            })
+            .catch(console.error);
+    }
+
+    function loadHistory() {
+        fetch("/history")
+            .then(r => r.json())
+            .then(list => {
+                let html = "";
+
+                for (const e of list) {
+                    html += `
+                    <span
+                        onclick="document.getElementById('picker').value='${e.hex}';update();"
+                        style="
+                            display:inline-block;
+                            width:30px;
+                            height:30px;
+                            background:${e.hex};
+                            border:1px solid #000;
+                            margin:2px;
+                            cursor:pointer;
+                        "
+                        title="${e.hex}">
+                    </span>
+                `;
+                }
+
+                document.getElementById("history").innerHTML = html;
+            })
+            .catch(console.error);
+    }
+
+    poll();
+    setInterval(poll, 1000);
+</script>
+
+</body>
+</html>
