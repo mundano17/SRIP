@@ -5,6 +5,8 @@ cmake-build-debug/
 cmake-build-release/
 out/
 .cache/
+node_modules/
+
 # CMake
 CMakeCache.txt
 CMakeFiles/
