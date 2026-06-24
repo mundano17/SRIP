@@ -1,9 +1,11 @@
 #include "ble.hpp"
+#include <algorithm>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <opencv2/opencv.hpp>
 
@@ -15,6 +17,95 @@
 struct RGB {
   uint8_t r, g, b;
 };
+
+struct ColorCluster {
+  RGB color;
+  float percentage;
+};
+
+float saturationScore(const RGB &c) {
+  float r = c.r / 255.f;
+  float g = c.g / 255.f;
+  float b = c.b / 255.f;
+
+  float maxv = std::max({r, g, b});
+  float minv = std::min({r, g, b});
+
+  if (maxv == 0.f)
+    return 0.f;
+
+  return (maxv - minv) / maxv;
+}
+
+float clusterScore(const ColorCluster &c) {
+  return 0.7f * c.percentage + 0.3f * saturationScore(c.color);
+}
+
+std::vector<ColorCluster> extractDominantColors(const cv::Mat &frame,
+                                                int k = 5) {
+
+  cv::Mat samples(frame.rows * frame.cols, 3, CV_32F);
+
+  for (int y = 0; y < frame.rows; y++) {
+    for (int x = 0; x < frame.cols; x++) {
+
+      cv::Vec3b pixel = frame.at<cv::Vec3b>(y, x);
+
+      samples.at<float>(y * frame.cols + x, 0) = pixel[0];
+      samples.at<float>(y * frame.cols + x, 1) = pixel[1];
+      samples.at<float>(y * frame.cols + x, 2) = pixel[2];
+    }
+  }
+
+  cv::Mat labels;
+  cv::Mat centers;
+
+  cv::kmeans(samples, k, labels,
+             cv::TermCriteria(
+                 cv::TermCriteria::EPS + cv::TermCriteria::MAX_ITER, 10, 1.0),
+             3, cv::KMEANS_PP_CENTERS, centers);
+
+  std::vector<int> counts(k, 0);
+
+  for (int i = 0; i < labels.rows; i++) {
+    counts[labels.at<int>(i)]++;
+  }
+
+  std::vector<ColorCluster> result;
+
+  for (int i = 0; i < k; i++) {
+
+    RGB rgb{static_cast<uint8_t>(centers.at<float>(i, 2)),
+            static_cast<uint8_t>(centers.at<float>(i, 1)),
+            static_cast<uint8_t>(centers.at<float>(i, 0))};
+
+    result.push_back({rgb, counts[i] / static_cast<float>(labels.rows)});
+  }
+
+  std::sort(result.begin(), result.end(), [](const auto &a, const auto &b) {
+    return a.percentage > b.percentage;
+  });
+
+  return result;
+}
+
+ColorCluster recommendColor(const std::vector<ColorCluster> &colors) {
+
+  ColorCluster best = colors[0];
+  float bestScore = clusterScore(best);
+
+  for (const auto &c : colors) {
+
+    float score = clusterScore(c);
+
+    if (score > bestScore) {
+      best = c;
+      bestScore = score;
+    }
+  }
+
+  return best;
+}
 
 // Sample box half-size in pixels — tweak this to make the dot bigger/smaller
 static const int SAMPLE_RADIUS = 20;
@@ -149,8 +240,9 @@ void drawHUD(cv::Mat &frame, const RGB &color, const std::string &hex) {
               cv::Point(20, 75), cv::FONT_HERSHEY_SIMPLEX, 0.7,
               cv::Scalar(255, 255, 255), 2);
 
-  cv::putText(frame, "S = send  Q = quit", cv::Point(20, frame.rows - 15),
-              cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(180, 180, 180), 1);
+  cv::putText(frame, "R = Analyze  S = Send  Q = Quit",
+              cv::Point(20, frame.rows - 15), cv::FONT_HERSHEY_SIMPLEX, 0.6,
+              cv::Scalar(255, 255, 255), 1, cv::LINE_AA);
 }
 
 void drawColorPreview(cv::Mat &frame, const RGB &color) {
@@ -168,6 +260,8 @@ void printColorToConsole(const RGB &color, const std::string &hex) {
 
 void runLoop(cv::VideoCapture &cap, int *ptr, BLEColorClient &ble) {
   cv::Mat frame;
+  std::vector<ColorCluster> dominantColors;
+  ColorCluster recommended{{0, 0, 0}, 0.f};
 
   while (true) {
     cap >> frame;
@@ -183,6 +277,24 @@ void runLoop(cv::VideoCapture &cap, int *ptr, BLEColorClient &ble) {
 
     drawSampleBox(frame, center, SAMPLE_RADIUS);
     drawHUD(frame, color, hex);
+    if (!dominantColors.empty()) {
+
+      int y = 140;
+
+      for (size_t i = 0; i < dominantColors.size(); i++) {
+
+        std::stringstream ss;
+
+        ss << i + 1 << ". " << rgbToHex(dominantColors[i].color) << " "
+           << std::fixed << std::setprecision(1)
+           << dominantColors[i].percentage * 100 << "%";
+
+        cv::putText(frame, ss.str(), cv::Point(20, y), cv::FONT_HERSHEY_SIMPLEX,
+                    0.5, cv::Scalar(255, 255, 255), 1);
+
+        y += 25;
+      }
+    }
     drawColorPreview(frame, color);
     printColorToConsole(color, hex);
 
@@ -197,6 +309,15 @@ void runLoop(cv::VideoCapture &cap, int *ptr, BLEColorClient &ble) {
     }
     if (key == 'q' || key == 'Q')
       break;
+    if (key == 'r' || key == 'R') {
+
+      dominantColors = extractDominantColors(frame, 5);
+
+      recommended = recommendColor(dominantColors);
+
+      std::cout << "\nRecommended: " << rgbToHex(recommended.color)
+                << std::endl;
+    }
   }
 }
 
